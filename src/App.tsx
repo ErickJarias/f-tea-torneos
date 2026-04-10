@@ -21,6 +21,7 @@ import {
   LogOut, 
   Settings, 
   ChevronRight, 
+  Key,
   Search, 
   ShieldCheck, 
   Sparkles, 
@@ -41,7 +42,67 @@ import { cn } from '@/lib/utils';
 import { GoogleGenAI } from "@google/genai";
 import ReactMarkdown from 'react-markdown';
 
-const ai = new GoogleGenAI({ apiKey: process.env.GEMINI_API_KEY });
+// --- Error Boundary ---
+
+class ErrorBoundary extends React.Component<{ children: React.ReactNode }, { hasError: boolean, error: Error | null }> {
+  constructor(props: { children: React.ReactNode }) {
+    super(props);
+    this.state = { hasError: false, error: null };
+  }
+
+  static getDerivedStateFromError(error: Error) {
+    return { hasError: true, error };
+  }
+
+  componentDidCatch(error: Error, errorInfo: React.ErrorInfo) {
+    console.error("ErrorBoundary caught an error", error, errorInfo);
+  }
+
+  render() {
+    if (this.state.hasError) {
+      return (
+        <div className="min-h-screen flex items-center justify-center bg-background p-4">
+          <Card className="max-w-md w-full border-destructive/50 shadow-2xl shadow-destructive/10">
+            <CardHeader className="text-center">
+              <div className="mx-auto bg-destructive/10 p-3 rounded-full w-12 h-12 flex items-center justify-center mb-4">
+                <Activity className="w-6 h-6 text-destructive" />
+              </div>
+              <CardTitle className="text-xl font-bold">Algo salió mal</CardTitle>
+              <CardDescription>La aplicación encontró un error inesperado.</CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="bg-muted p-4 rounded-lg overflow-auto max-h-40">
+                <code className="text-xs text-destructive">{this.state.error?.message}</code>
+              </div>
+              <Button 
+                className="w-full" 
+                onClick={() => window.location.reload()}
+              >
+                Reintentar
+              </Button>
+            </CardContent>
+          </Card>
+        </div>
+      );
+    }
+
+    return this.props.children;
+  }
+}
+
+// --- Gemini AI Helper ---
+
+let aiInstance: GoogleGenAI | null = null;
+const getAI = () => {
+  if (!aiInstance) {
+    const apiKey = process.env.GEMINI_API_KEY;
+    if (!apiKey) {
+      throw new Error("GEMINI_API_KEY no está configurada en las variables de entorno.");
+    }
+    aiInstance = new GoogleGenAI({ apiKey });
+  }
+  return aiInstance;
+};
 
 // --- Components ---
 
@@ -702,7 +763,8 @@ export default function App() {
   }
 
   return (
-    <div className="min-h-screen bg-background font-sans text-foreground transition-colors duration-300">
+    <ErrorBoundary>
+      <div className="min-h-screen bg-background font-sans text-foreground transition-colors duration-300">
       <Navbar 
         user={user} 
         onLogin={handleLogin} 
@@ -823,6 +885,7 @@ export default function App() {
         </div>
       </footer>
     </div>
+    </ErrorBoundary>
   );
 }
 
@@ -836,6 +899,9 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
   const [isAddMatchOpen, setIsAddMatchOpen] = useState(false);
   const [isAddPlayerOpen, setIsAddPlayerOpen] = useState(false);
   const [selectedTeamForPlayer, setSelectedTeamForPlayer] = useState<string | null>(null);
+  const [teamAccessCode, setTeamAccessCode] = useState("");
+  const [managedTeam, setManagedTeam] = useState<Team | null>(null);
+  const [selectedRound, setSelectedRound] = useState<number>(1);
   const [playerPhotoBase64, setPlayerPhotoBase64] = useState<string | null>(null);
   const [selectedRoundMVP, setSelectedRoundMVP] = useState<number | null>(null);
   const isOrganizer = user?.uid === tournament.organizerId;
@@ -870,7 +936,8 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
     const newTeam: Partial<Team> = {
       name: formData.get('name') as string,
       tournamentId: tournament.id,
-      points: 0, played: 0, won: 0, drawn: 0, lost: 0, goalsFor: 0, goalsAgainst: 0
+      points: 0, played: 0, won: 0, drawn: 0, lost: 0, goalsFor: 0, goalsAgainst: 0,
+      accessCode: Math.random().toString(36).substring(2, 8).toUpperCase()
     };
     try {
       await setDoc(doc(collection(db, `tournaments/${tournament.id}/teams`)), newTeam);
@@ -1004,21 +1071,42 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
     } catch (error) { handleFirestoreError(error, OperationType.CREATE, 'players'); }
   };
 
-  const generateFixtures = async () => {
+  const generateFixtures = async (isDouble: boolean = false) => {
     if (teams.length < 2) {
       return;
     }
 
+    // Clear existing matches first
+    try {
+      const existingMatches = [...matches];
+      for (const m of existingMatches) {
+        await deleteDoc(doc(db, `tournaments/${tournament.id}/matches`, m.id));
+      }
+    } catch (error) {
+      console.error("Error clearing matches:", error);
+    }
+
     const tournamentTeams = [...teams];
     if (tournamentTeams.length % 2 !== 0) {
-      tournamentTeams.push({ id: 'bye', name: 'DESCANSO', points: 0, played: 0, won: 0, drawn: 0, lost: 0, goalsFor: 0, goalsAgainst: 0, tournamentId: tournament.id });
+      tournamentTeams.push({ 
+        id: 'bye', 
+        name: 'DESCANSO', 
+        points: 0, 
+        played: 0, 
+        won: 0, 
+        drawn: 0, 
+        lost: 0, 
+        goalsFor: 0, 
+        goalsAgainst: 0, 
+        tournamentId: tournament.id 
+      });
     }
 
     const numTeams = tournamentTeams.length;
     const numRounds = numTeams - 1;
     const matchesPerRound = numTeams / 2;
 
-    try {
+    const createMatches = async (roundOffset: number, reverse: boolean) => {
       for (let round = 0; round < numRounds; round++) {
         for (let match = 0; match < matchesPerRound; match++) {
           const homeIdx = (round + match) % (numTeams - 1);
@@ -1026,26 +1114,36 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
 
           if (match === 0) awayIdx = numTeams - 1;
 
-          const homeTeam = tournamentTeams[homeIdx];
-          const awayTeam = tournamentTeams[awayIdx];
+          let homeTeam = tournamentTeams[homeIdx];
+          let awayTeam = tournamentTeams[awayIdx];
 
-          if (homeTeam.id !== 'bye' && awayTeam.id !== 'bye') {
-            const matchDate = new Date();
-            matchDate.setDate(matchDate.getDate() + (round * 7)); // One round per week
-            matchDate.setHours(10 + match, 0, 0, 0); // Staggered hours
-
-            await addDoc(collection(db, `tournaments/${tournament.id}/matches`), {
-              homeTeamId: homeTeam.id,
-              awayTeamId: awayTeam.id,
-              date: matchDate.toISOString(),
-              round: round + 1,
-              status: 'scheduled',
-              homeScore: 0,
-              awayScore: 0,
-              tournamentId: tournament.id
-            });
+          if (reverse) {
+            [homeTeam, awayTeam] = [awayTeam, homeTeam];
           }
+
+          const matchDate = new Date();
+          matchDate.setDate(matchDate.getDate() + ((round + roundOffset) * 7));
+          matchDate.setHours(10 + match, 0, 0, 0);
+
+          await addDoc(collection(db, `tournaments/${tournament.id}/matches`), {
+            homeTeamId: homeTeam.id,
+            awayTeamId: awayTeam.id,
+            date: matchDate.toISOString(),
+            round: round + roundOffset + 1,
+            status: 'scheduled',
+            homeScore: 0,
+            awayScore: 0,
+            tournamentId: tournament.id,
+            isBye: homeTeam.id === 'bye' || awayTeam.id === 'bye'
+          });
         }
+      }
+    };
+
+    try {
+      await createMatches(0, false);
+      if (isDouble) {
+        await createMatches(numRounds, true);
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.CREATE, 'matches');
@@ -1153,6 +1251,19 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
   };
 
   const [activeTab, setActiveTab] = useState<'standings' | 'fixtures' | 'stats' | 'teams' | 'scouting' | 'awards'>('standings');
+
+  const rounds = Array.from(new Set(matches.map(m => m.round))).sort((a, b) => a - b);
+  const filteredMatches = matches.filter(m => m.round === selectedRound && !m.isBye);
+
+  const handleTeamAccess = () => {
+    const team = teams.find(t => t.accessCode === teamAccessCode.toUpperCase());
+    if (team) {
+      setManagedTeam(team);
+      setSelectedTeamForPlayer(team.id);
+    } else {
+      // Error handling would go here
+    }
+  };
 
   return (
     <motion.div
@@ -1427,21 +1538,48 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
                   )}
 
                   <div className="space-y-6">
-                    <div className="flex justify-between items-center">
+                    <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                       <h2 className="text-xl font-bold flex items-center gap-2">
                         <Calendar className="w-5 h-5 text-primary" />
                         Calendario de Partidos
                       </h2>
+                      <div className="flex items-center gap-2 w-full sm:w-auto overflow-x-auto pb-2 sm:pb-0 no-scrollbar">
+                        {rounds.map(round => (
+                          <Button 
+                            key={round} 
+                            variant={selectedRound === round ? 'default' : 'outline'} 
+                            size="sm"
+                            onClick={() => setSelectedRound(round)}
+                            className="h-8 min-w-[3rem] font-bold"
+                          >
+                            J{round}
+                          </Button>
+                        ))}
+                      </div>
                       {isOrganizer && (
-                        <Button variant="outline" size="sm" onClick={generateFixtures} className="gap-2 border-primary/20 hover:bg-primary/5">
-                          <Sparkles className="w-4 h-4 text-primary" />
-                          Generar Calendario Automático
-                        </Button>
+                        <div className="flex gap-2">
+                          <Button variant="outline" size="sm" onClick={() => generateFixtures(false)} className="gap-2 border-primary/20 hover:bg-primary/5">
+                            <Sparkles className="w-4 h-4 text-primary" />
+                            Una Vuelta
+                          </Button>
+                          <Button variant="outline" size="sm" onClick={() => generateFixtures(true)} className="gap-2 border-primary/20 hover:bg-primary/5">
+                            <Sparkles className="w-4 h-4 text-primary" />
+                            Ida y Vuelta
+                          </Button>
+                          <Button variant="ghost" size="sm" onClick={async () => {
+                            // Clear matches
+                            for (const m of matches) {
+                              await deleteDoc(doc(db, `tournaments/${tournament.id}/matches`, m.id));
+                            }
+                          }} className="text-destructive hover:text-destructive hover:bg-destructive/10">
+                            Limpiar
+                          </Button>
+                        </div>
                       )}
                     </div>
 
                     <div className="grid grid-cols-1 gap-4">
-                      {matches.length > 0 ? matches.map((match) => (
+                      {filteredMatches.length > 0 ? filteredMatches.map((match) => (
                     <Card key={match.id} className="overflow-hidden border-none shadow-sm bg-card/50 backdrop-blur-sm">
                       <div className="bg-muted/50 px-4 py-2 flex justify-between items-center text-xs font-medium uppercase tracking-wider">
                         <span>Jornada {match.round}</span>
@@ -1582,6 +1720,55 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
 
               {activeTab === 'teams' && (
                 <div className="space-y-8">
+                  {!isOrganizer && !managedTeam && (
+                    <div className="max-w-md mx-auto p-8 bg-card border rounded-3xl shadow-xl text-center space-y-6">
+                      <div className="bg-primary/10 w-16 h-16 rounded-2xl flex items-center justify-center mx-auto">
+                        <Key className="w-8 h-8 text-primary" />
+                      </div>
+                      <div>
+                        <h3 className="text-xl font-bold">Acceso para Delegados</h3>
+                        <p className="text-sm text-muted-foreground mt-2">Ingresa el código de acceso de tu equipo para gestionar tu nómina.</p>
+                      </div>
+                      <div className="flex gap-2">
+                        <Input 
+                          placeholder="CÓDIGO" 
+                          className="text-center font-black tracking-widest uppercase"
+                          value={teamAccessCode}
+                          onChange={(e) => setTeamAccessCode(e.target.value)}
+                        />
+                        <Button onClick={handleTeamAccess}>Entrar</Button>
+                      </div>
+                    </div>
+                  )}
+
+                  {managedTeam && (
+                    <div className="p-6 bg-primary/5 border border-primary/20 rounded-2xl flex flex-col md:flex-row items-center justify-between gap-4">
+                      <div className="flex items-center gap-4">
+                        <div className="w-12 h-12 bg-primary text-primary-foreground rounded-xl flex items-center justify-center font-black text-xl">
+                          {managedTeam.name.charAt(0)}
+                        </div>
+                        <div>
+                          <h3 className="font-bold text-lg">Gestionando: {managedTeam.name}</h3>
+                          <p className="text-xs text-muted-foreground uppercase tracking-widest">Panel de Delegado Activo</p>
+                        </div>
+                      </div>
+                      <div className="flex gap-2">
+                        <Button 
+                          size="sm" 
+                          className="gap-2"
+                          disabled={isRosterLocked}
+                          onClick={() => setIsAddPlayerOpen(true)}
+                        >
+                          <Plus className="w-4 h-4" />
+                          Inscribir Jugador
+                        </Button>
+                        <Button variant="ghost" size="sm" onClick={() => { setManagedTeam(null); setTeamAccessCode(""); }}>
+                          Salir
+                        </Button>
+                      </div>
+                    </div>
+                  )}
+
                   {isOrganizer && (
                     <div className="p-6 border-2 border-dashed rounded-2xl bg-muted/20 flex flex-col items-center text-center gap-4">
                       <div className="w-12 h-12 bg-primary/10 rounded-full flex items-center justify-center">
@@ -1625,18 +1812,37 @@ const TournamentDetails = ({ tournament, user, onBack }: { tournament: Tournamen
                           </p>
                           
                           {isOrganizer && (
+                            <div className="space-y-3">
+                              <div className="bg-muted p-2 rounded-lg flex items-center justify-between">
+                                <span className="text-[10px] font-bold uppercase text-muted-foreground">Código:</span>
+                                <code className="text-xs font-black text-primary tracking-widest">{team.accessCode}</code>
+                              </div>
+                              <Button 
+                                variant="outline" 
+                                size="sm" 
+                                className="w-full gap-2 border-primary/20 hover:bg-primary/5 text-primary disabled:opacity-50"
+                                disabled={isRosterLocked}
+                                onClick={() => {
+                                  setSelectedTeamForPlayer(team.id);
+                                  setIsAddPlayerOpen(true);
+                                }}
+                              >
+                                <Plus className="w-4 h-4" />
+                                {isRosterLocked ? 'Inscripciones Cerradas' : 'Inscribir Jugador'}
+                              </Button>
+                            </div>
+                          )}
+                          
+                          {managedTeam?.id === team.id && (
                             <Button 
-                              variant="outline" 
+                              variant="default" 
                               size="sm" 
-                              className="w-full gap-2 border-primary/20 hover:bg-primary/5 text-primary disabled:opacity-50"
+                              className="w-full gap-2"
                               disabled={isRosterLocked}
-                              onClick={() => {
-                                setSelectedTeamForPlayer(team.id);
-                                setIsAddPlayerOpen(true);
-                              }}
+                              onClick={() => setIsAddPlayerOpen(true)}
                             >
                               <Plus className="w-4 h-4" />
-                              {isRosterLocked ? 'Inscripciones Cerradas' : 'Inscribir Jugador'}
+                              Gestionar Nómina
                             </Button>
                           )}
                         </CardContent>
@@ -2030,7 +2236,7 @@ const ScoutingTab = ({ tournament, teams, players, matches }: { tournament: Tour
       
       Responde en formato Markdown elegante.`;
 
-      const response = await ai.models.generateContent({
+      const response = await getAI().models.generateContent({
         model: "gemini-3-flash-preview",
         contents: prompt,
       });

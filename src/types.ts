@@ -47,6 +47,7 @@ export interface Team {
   lost: number;
   goalsFor: number;
   goalsAgainst: number;
+  accessCode?: string;
 }
 
 export interface Player {
@@ -86,6 +87,7 @@ export interface Match {
   status: 'scheduled' | 'live' | 'finished';
   date: string;
   round: number;
+  isBye?: boolean;
   events?: MatchEvent[];
 }
 
