@@ -1,0 +1,146 @@
+{
+  "entities": {
+    "AppSettings": {
+      "title": "AppSettings",
+      "description": "Global application settings.",
+      "type": "object",
+      "properties": {
+        "appName": { "type": "string" },
+        "appLogoUrl": { "type": "string", "format": "uri" },
+        "globalSponsors": {
+          "type": "array",
+          "items": { "$ref": "Sponsor" }
+        }
+      }
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "User profile data for tracking.",
+      "type": "object",
+      "properties": {
+        "uid": { "type": "string" },
+        "email": { "type": "string" },
+        "displayName": { "type": "string" },
+        "photoURL": { "type": "string" },
+        "lastLoginAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "Sponsor": {
+      "title": "Sponsor",
+      "description": "A sponsor for the app or tournament.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "logoUrl": { "type": "string", "format": "uri" },
+        "link": { "type": "string", "format": "uri" },
+        "tier": { "type": "string", "enum": ["gold", "silver", "bronze"] }
+      }
+    },
+    "Tournament": {
+      "title": "Tournament",
+      "description": "A sports tournament or league.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "description": "Name of the tournament" },
+        "description": { "type": "string", "description": "Description of the tournament" },
+        "type": { "type": "string", "enum": ["league", "knockout", "group_stage"], "description": "Format of the tournament" },
+        "status": { "type": "string", "enum": ["draft", "active", "completed"], "description": "Current status" },
+        "organizerId": { "type": "string", "description": "UID of the organizer" },
+        "createdAt": { "type": "string", "format": "date-time" },
+        "startDate": { "type": "string", "format": "date" },
+        "endDate": { "type": "string", "format": "date" },
+        "logoUrl": { "type": "string", "format": "uri" }
+      },
+      "required": ["name", "type", "organizerId"]
+    },
+    "Team": {
+      "title": "Team",
+      "description": "A team participating in tournaments.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "logoUrl": { "type": "string", "format": "uri" },
+        "tournamentId": { "type": "string" },
+        "points": { "type": "number" },
+        "played": { "type": "number" },
+        "won": { "type": "number" },
+        "drawn": { "type": "number" },
+        "lost": { "type": "number" },
+        "goalsFor": { "type": "number" },
+        "goalsAgainst": { "type": "number" }
+      },
+      "required": ["name", "tournamentId"]
+    },
+    "Player": {
+      "title": "Player",
+      "description": "A player in a team.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string" },
+        "teamId": { "type": "string" },
+        "tournamentId": { "type": "string" },
+        "goals": { "type": "number" },
+        "assists": { "type": "number" },
+        "yellowCards": { "type": "number" },
+        "redCards": { "type": "number" },
+        "photoUrl": { "type": "string", "format": "uri" },
+        "videoUrl": { "type": "string", "format": "uri" },
+        "position": { "type": "string" },
+        "metrics": {
+          "type": "object",
+          "properties": {
+            "pace": { "type": "number" },
+            "shooting": { "type": "number" },
+            "passing": { "type": "number" },
+            "dribbling": { "type": "number" },
+            "defending": { "type": "number" },
+            "physical": { "type": "number" }
+          }
+        }
+      },
+      "required": ["name", "teamId", "tournamentId"]
+    },
+    "Match": {
+      "title": "Match",
+      "description": "A match between two teams.",
+      "type": "object",
+      "properties": {
+        "tournamentId": { "type": "string" },
+        "homeTeamId": { "type": "string" },
+        "awayTeamId": { "type": "string" },
+        "homeScore": { "type": "number" },
+        "awayScore": { "type": "number" },
+        "status": { "type": "string", "enum": ["scheduled", "live", "finished"] },
+        "date": { "type": "string", "format": "date-time" },
+        "round": { "type": "number" }
+      },
+      "required": ["tournamentId", "homeTeamId", "awayTeamId", "status"]
+    }
+  },
+  "firestore": {
+    "/tournaments/{tournamentId}": {
+      "schema": "Tournament",
+      "description": "Collection of tournaments"
+    },
+    "/tournaments/{tournamentId}/teams/{teamId}": {
+      "schema": "Team",
+      "description": "Teams in a tournament"
+    },
+    "/tournaments/{tournamentId}/players/{playerId}": {
+      "schema": "Player",
+      "description": "Players in a tournament"
+    },
+    "/tournaments/{tournamentId}/matches/{matchId}": {
+      "schema": "Match",
+      "description": "Matches in a tournament"
+    },
+    "/settings/{settingsId}": {
+      "schema": "AppSettings",
+      "description": "Global settings"
+    },
+    "/users/{userId}": {
+      "schema": "UserProfile",
+      "description": "User profiles"
+    }
+  }
+}
